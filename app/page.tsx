@@ -1,7 +1,8 @@
 'use client';
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { supabase } from './utils/supabase'; // データベース接続パーツ
+// ↓ 先ほど作ったファイルへのパス
+import { supabase } from './utils/supabase';
 import { 
   Calendar, CheckSquare, Users, Clock, LayoutDashboard, Plus, Trash2, 
   CheckCircle, List, GripVertical, ChevronLeft, ChevronRight, Bell, Flag, 
