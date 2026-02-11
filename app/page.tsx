@@ -1,8 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-// ↓ 先ほど作ったファイルへのパス
-import { supabase } from './utils/supabase';
+import { supabase } from './utils/supabase'; // データベース接続
 import { 
   Calendar, CheckSquare, Users, Clock, LayoutDashboard, Plus, Trash2, 
   CheckCircle, List, GripVertical, ChevronLeft, ChevronRight, Bell, Flag, 
@@ -186,10 +185,8 @@ const SettingsScreen = ({
     );
 }
 
-// 3. Menu Screen
+// 3. Menu Screen (Updated with Supabase Sync)
 const MenuScreen = ({ setCurrentView, data, setData, theme }: any) => {
-    // ... (Code remains same, for brevity)
-    // ダッシュボードのデータはローカルのままにします（複雑化防止のため）
     const [editingSection, setEditingSection] = useState<string | null>(null);
     const [tempSchoolName, setTempSchoolName] = useState('');
     const [tempGoal, setTempGoal] = useState('');
@@ -206,21 +203,43 @@ const MenuScreen = ({ setCurrentView, data, setData, theme }: any) => {
         setEditingSection(section);
     };
 
-    const saveSchoolName = () => { setData((prev: any) => ({ ...prev, schoolName: tempSchoolName })); setEditingSection(null); };
-    const saveGoal = () => { setData((prev: any) => ({ ...prev, weeklyGoal: tempGoal })); setEditingSection(null); };
-    const saveEvents = () => {
+    // --- DB Update Functions ---
+    // ここがミソです！保存ボタンを押すと、Supabaseのデータを書き換えます
+    const updateDashboardDB = async (updates: any) => {
+        const { error } = await supabase.from('dashboard').update(updates).eq('id', 'default');
+        if (error) console.error('Dashboard update failed:', error);
+    };
+
+    const saveSchoolName = async () => { 
+        // 自分の画面を更新するだけでなく、DBを更新します
+        await updateDashboardDB({ school_name: tempSchoolName });
+        setEditingSection(null); 
+    };
+
+    const saveGoal = async () => { 
+        await updateDashboardDB({ weekly_goal: tempGoal });
+        setEditingSection(null); 
+    };
+
+    const saveEvents = async () => {
         const newEvents = tempEvents.split('\n').filter(line => line.trim()).map((line, idx) => {
             const parts = line.split(':');
             const type = parts[0]?.includes('全校') ? 'school' : 'staff';
             const title = parts.length > 1 ? parts.slice(1).join(':') : parts[0];
-            return { id: `ne-${idx}`, type: type, title };
+            return { id: `ne-${idx}-${Date.now()}`, type: type, title };
         });
-        setData((prev: any) => ({ ...prev, todaysEvents: newEvents }));
+        await updateDashboardDB({ todays_events: newEvents });
         setEditingSection(null);
     };
+
     const addAnnouncement = () => { setTempAnnouncements([...tempAnnouncements, { id: generateId(), grade: '1年部', title: '新しいお知らせ', content: '' }]); };
     const updateTempAnnouncement = (id: string, field: string, value: string) => { setTempAnnouncements(tempAnnouncements.map(a => a.id === id ? { ...a, [field]: value } : a)); };
-    const saveAnnouncements = () => { setData((prev: any) => ({ ...prev, announcements: tempAnnouncements })); setEditingSection(null); };
+    
+    const saveAnnouncements = async () => { 
+        await updateDashboardDB({ announcements: tempAnnouncements });
+        setEditingSection(null); 
+    };
+    // ---------------------------
 
     const cardClass = `p-6 rounded-xl shadow-sm border relative group ${theme === 'dark' ? 'bg-gray-800 border-gray-700' : 'bg-white border-l-4 border-gray-100'}`;
 
@@ -1004,9 +1023,7 @@ const AllTasksView = ({ tasks, theme }: any) => (
 
 // --- Main Component ---
 export default function SchoolManagerAppV19() {
-    const INITIAL_TASKS: Task[] = [
-        // 初期タスクは一旦空にします（DBから読み込むため）
-    ];
+    const INITIAL_TASKS: Task[] = [];
 
     const INITIAL_DASHBOARD: DashboardData = {
         schoolName: '〇〇小学校',
@@ -1039,14 +1056,14 @@ export default function SchoolManagerAppV19() {
     const [allSchedules, setAllSchedules] = useState({});
     const [selectedGrade, setSelectedGrade] = useState('1年部');
 
+    // ★ 初期ロード & リアルタイム監視の設定
     useEffect(() => {
         setMounted(true);
-        // Supabaseからタスクを取得
+        // 1. Supabaseからタスクを取得
         const fetchTasks = async () => {
             const { data, error } = await supabase.from('tasks').select('*');
             if (error) console.error("Error fetching tasks:", error);
             else if (data) {
-                // DBのデータをアプリの形式に変換
                 const formattedTasks = data.map((t: any) => ({
                     id: t.id,
                     content: t.content,
@@ -1060,6 +1077,23 @@ export default function SchoolManagerAppV19() {
         };
         fetchTasks();
 
+        // 2. Supabaseからダッシュボード情報を取得
+        const fetchDashboard = async () => {
+            const { data, error } = await supabase.from('dashboard').select('*').eq('id', 'default').single();
+            if (error) {
+                console.error("Error fetching dashboard:", error);
+            } else if (data) {
+                setDashboardData({
+                    schoolName: data.school_name || INITIAL_DASHBOARD.schoolName,
+                    weeklyGoal: data.weekly_goal || INITIAL_DASHBOARD.weeklyGoal,
+                    todaysEvents: data.todays_events || INITIAL_DASHBOARD.todaysEvents,
+                    announcements: data.announcements || INITIAL_DASHBOARD.announcements
+                });
+            }
+        };
+        fetchDashboard();
+
+        // 3. ローカルストレージの設定読み込み（個人設定）
         const loadState = (key: string) => {
             const saved = localStorage.getItem(key);
             return saved ? JSON.parse(saved) : null;
@@ -1072,11 +1106,36 @@ export default function SchoolManagerAppV19() {
         if (savedTeachers) setClassTeachers(savedTeachers);
         const savedGrades = loadState('sm_grades');
         if (savedGrades) setGrades(savedGrades);
-        // TasksはDBから読み込むのでLocalStorageからは読まない
-        const savedDashboard = loadState('sm_dashboard');
-        if (savedDashboard) setDashboardData(savedDashboard);
         const savedSchedules = loadState('sm_schedules');
         if (savedSchedules) setAllSchedules(savedSchedules);
+
+        // ★★★ 4. リアルタイム同期の心臓部 ★★★
+        // Supabaseからの「変更通知」を待ち受けます
+        const channel = supabase
+            .channel('realtime_updates')
+            // ダッシュボードの変更を監視
+            .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'dashboard' }, (payload) => {
+                const newData = payload.new as any;
+                if (newData) {
+                    setDashboardData({
+                        schoolName: newData.school_name,
+                        weeklyGoal: newData.weekly_goal,
+                        todaysEvents: newData.todays_events || [],
+                        announcements: newData.announcements || []
+                    });
+                }
+            })
+            // タスクの変更を監視（誰かが追加・削除したらすぐ反映）
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, () => {
+                fetchTasks(); // 最新のタスクリストを取り直す（一番確実）
+            })
+            .subscribe();
+
+        // 片付け（ページを閉じるときに監視を終了）
+        return () => {
+            supabase.removeChannel(channel);
+        };
+
     }, []);
 
     useEffect(() => {
@@ -1085,11 +1144,10 @@ export default function SchoolManagerAppV19() {
             localStorage.setItem('sm_classes', JSON.stringify(classes));
             localStorage.setItem('sm_class_teachers', JSON.stringify(classTeachers));
             localStorage.setItem('sm_grades', JSON.stringify(grades));
-            // TasksはDB管理なのでLocalStorageには保存しない（重複防止）
-            localStorage.setItem('sm_dashboard', JSON.stringify(dashboardData));
+            // TasksとDashboardはDB管理なのでLocalStorageには保存しない
             localStorage.setItem('sm_schedules', JSON.stringify(allSchedules));
         }
-    }, [theme, classes, classTeachers, grades, dashboardData, allSchedules, mounted]);
+    }, [theme, classes, classTeachers, grades, allSchedules, mounted]);
 
     const handleYearUpdate = () => {
         if (window.confirm('本当に年度更新を行いますか？全てのデータがリセットされます。')) {
